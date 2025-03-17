@@ -38,3 +38,5 @@ A2: 这种情况发生的比较少，大部分系统调用在内核就可以得�
 
 ## Stage 3
 Q1: QEMU场景下，OS和RUSTSBI是打包到一起的吗，OS是RUSTSBI加载的吗？RUSTSBI怎么跳转到OS？
+
+Q2: qemu-riscv64 模拟了一个怎么样的硬件，什么cpu，有哪些外设？
