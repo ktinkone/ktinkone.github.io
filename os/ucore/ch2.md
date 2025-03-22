@@ -61,9 +61,9 @@ Q2: 怎么把内核程序和用户程序分开？
 Q3：内核从哪里加载用户程序？
 
 A1：当前针对qemu-riscv64 -machine virt 平台，加载逻辑大概是下面这个样子：
-    看qemu里面的代码，对于riscv virt平台，如果参数里面指定了firmware，就先加载firmware（从0x8000000开始加载，这个值也是virt平台DRAM开始的位置），
+    看qemu里面的代码，对于riscv virt平台，如果参数里面指定了firmware，就先加载firmware（从0x80000000开始加载，这个值也是virt平台DRAM开始的位置），
     加载完firmware之后，开始加载kernel，kernel的加载位置取决于加载完fireware的end_addr，64位平台下，拿end_addr 2M对齐。所以如果firmware小于2M，
-    kernel就从0x8020000开始，（那真实的硬件又是什么样的呢？）。qemu下，firmware和kernel都是qemu加载的，firmware执行完后跳转到kernel。
+    kernel就从0x80200000开始，（那真实的硬件又是什么样的呢？）。qemu下，firmware和kernel都是qemu加载的，firmware执行完后跳转到kernel。
 
 A2: 在当前ch2中，用户程序和内核没有完全区分开，用户程序和内核链接到一起，用户程序链接到内核的.data段中
 ![ch2 mmap](./pictures/ch2_mmap.png)
@@ -129,4 +129,8 @@ void usertrapret(struct trapframe *trapframe, uint64 kstack)
 
 ```
 
-Q1: 奇怪，内核栈的栈顶值不保存吗？程序退出后，内核的现场不是没了吗？
+Q1: 奇怪，内核栈的栈顶值不保存吗？程序退出后，内核的现场不是没了吗？（或者说内核需要保留栈上下文吗，是不是只要确保每次异常进来，只要有栈执行就可以了，具体的数据通过全局变量保存？？？）
+A1: 当前ch2中，从内核态返回用户态，不管是从什么调用返回，都设置了同样的kernel_sp, 也就是说每次进入内核，kernel_sp的值都是相同的，但是每次进来的参数不同，也就形成kernel每次不同的行为
+
+Q2: 关注两次sret有什么不一样，分别是os启动后第一次执行sret和后续异常处理结束后执行sret
+A2：好像没啥不一样的

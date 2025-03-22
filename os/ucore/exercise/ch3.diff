@@ -1,0 +1,219 @@
+diff --git a/os/loader.c b/os/loader.c
+index be9f10a..6b280a5 100644
+--- a/os/loader.c
++++ b/os/loader.c
+@@ -51,6 +51,8 @@ int run_all_app()
+ 		/*
+ 		* LAB1: you may need to initialize your new fields of proc here
+ 		*/
++		p->first_sched_time = 0;
++		p->have_sched = 0;
+ 	}
+ 	return 0;
+ }
+\ No newline at end of file
+diff --git a/os/proc.c b/os/proc.c
+index 363f4fc..3bedb3e 100644
+--- a/os/proc.c
++++ b/os/proc.c
+@@ -2,6 +2,7 @@
+ #include "defs.h"
+ #include "loader.h"
+ #include "trap.h"
++#include "timer.h"
+ 
+ struct proc pool[NPROC];
+ char kstack[NPROC][PAGE_SIZE];
+@@ -34,6 +35,13 @@ void proc_init(void)
+ 		/*
+ 		* LAB1: you may need to initialize your new fields of proc here
+ 		*/
++		memset(p->syscall_times, 0, sizeof(p->syscall_times));
++		p->u_end_time = 0;
++		p->u_start_time = 0;
++		p->u_total_time = 0;
++		p->k_end_time = 0;
++		p->k_start_time = 0;
++		p->k_total_time = 0;
+ 	}
+ 	idle.kstack = (uint64)boot_stack_top;
+ 	idle.pid = 0;
+@@ -84,6 +92,11 @@ void scheduler(void)
+ 				/*
+ 				* LAB1: you may need to init proc start time here
+ 				*/
++				if (p->have_sched == 0) {
++					p->first_sched_time = get_cycle();
++					p->have_sched = 1;
++				}
++				p->k_start_time = get_cycle();
+ 				p->state = RUNNING;
+ 				current_proc = p;
+ 				swtch(&idle.context, &p->context);
+diff --git a/os/proc.h b/os/proc.h
+index 5a6625d..1817c18 100644
+--- a/os/proc.h
++++ b/os/proc.h
+@@ -2,6 +2,7 @@
+ #define PROC_H
+ 
+ #include "types.h"
++#include "syscall_ids.h"
+ 
+ #define NPROC (16)
+ 
+@@ -38,11 +39,26 @@ struct proc {
+ 	/*
+ 	* LAB1: you may need to add some new fields here
+ 	*/
++	unsigned int syscall_times[MAX_SYSCALL_NUM];
++	uint64 u_start_time; /*user space start time*/
++	uint64 u_end_time;	/*user space end time*/
++	uint64 u_total_time; /*user space total time*/
++
++	uint64 k_start_time; /*kernel space start time*/
++	uint64 k_end_time;	/*kernel space end time*/
++	uint64 k_total_time; /*kernel space total time*/
++	int have_sched;
++	uint64 first_sched_time;
+ };
+ 
+ /*
+ * LAB1: you may need to define struct for TaskInfo here
+ */
++struct proc_task_info{
++	enum procstate state;
++	unsigned int syscall_times[MAX_SYSCALL_NUM];
++	int total_time; /*ms*/
++};
+ 
+ struct proc *curr_proc();
+ void exit(int);
+diff --git a/os/syscall.c b/os/syscall.c
+index 2c25b48..17f375f 100644
+--- a/os/syscall.c
++++ b/os/syscall.c
+@@ -4,6 +4,7 @@
+ #include "syscall_ids.h"
+ #include "timer.h"
+ #include "trap.h"
++#include "proc.h"
+ 
+ uint64 sys_write(int fd, char *str, uint len)
+ {
+@@ -39,6 +40,36 @@ uint64 sys_gettimeofday(TimeVal *val, int _tz)
+ /*
+ * LAB1: you may need to define sys_task_info here
+ */
++uint64 sys_task_info(struct proc_task_info *task_info)
++{
++	struct proc *cur_proc;
++	int syscall_id;
++
++	cur_proc = curr_proc();
++
++	debugf("---sys_task_info---");
++
++	/*fill task_info*/
++	switch (cur_proc->state) {
++		case RUNNING:
++			task_info->state = 2;
++			break;
++		default:
++			break;
++	}
++
++	//task_info->state = cur_proc->state;
++	//task_info->total_time = (cur_proc->u_total_time + cur_proc->k_total_time) / (12500); /*1ms 12500cycle*/
++	for (syscall_id = 0; syscall_id < MAX_SYSCALL_NUM; syscall_id++) {
++		task_info->syscall_times[syscall_id] = cur_proc->syscall_times[syscall_id];
++	}
++
++	task_info->total_time = (get_cycle() - cur_proc->first_sched_time) / (12500);
++
++	debugf("total time %d state %d", task_info->total_time, task_info->state);
++
++	return 0;
++}
+ 
+ extern char trap_page[];
+ 
+@@ -53,6 +84,10 @@ void syscall()
+ 	/*
+ 	* LAB1: you may need to update syscall counter for task info here
+ 	*/
++	if (id < MAX_SYSCALL_NUM) {
++		curr_proc()->syscall_times[id]++;
++	}
++
+ 	switch (id) {
+ 	case SYS_write:
+ 		ret = sys_write(args[0], (char *)args[1], args[2]);
+@@ -69,6 +104,9 @@ void syscall()
+ 	/*
+ 	* LAB1: you may need to add SYS_taskinfo case here
+ 	*/
++	case SYS_task_info:
++		ret = sys_task_info((struct proc_task_info *)args[0]);
++		break;
+ 	default:
+ 		ret = -1;
+ 		errorf("unknown syscall %d", id);
+diff --git a/os/syscall_ids.h b/os/syscall_ids.h
+index 0a1b397..f94b13a 100644
+--- a/os/syscall_ids.h
++++ b/os/syscall_ids.h
+@@ -280,6 +280,8 @@
+ /*
+ * LAB1: you may need to define SYS_task_info here
+ */
++#define SYS_task_info   410
++
+ #define SYS_pidfd_send_signal 424
+ #define SYS_io_uring_setup 425
+ #define SYS_io_uring_enter 426
+@@ -296,3 +298,5 @@
+ #define SYS_pidfd_getfd 438
+ #define SYS_faccessat2 439
+ #define SYS_riscv_flush_icache 244 + 15
++
++#define MAX_SYSCALL_NUM	500
+\ No newline at end of file
+diff --git a/os/trap.c b/os/trap.c
+index c051c37..cc98884 100644
+--- a/os/trap.c
++++ b/os/trap.c
+@@ -43,9 +43,18 @@ void unknown_trap()
+ //
+ void usertrap()
+ {
+-	set_kerneltrap();
++	set_kerneltrap(); //reset kerneltrap entry, 
+ 	struct trapframe *trapframe = curr_proc()->trapframe;
+ 
++	/*calc time*/
++	/*user space end*/
++	curr_proc()->u_end_time = get_cycle();
++	curr_proc()->u_total_time += curr_proc()->u_end_time - curr_proc()->u_start_time;
++	//debugf("usertrap in %d start time %d u end time %d\n", curr_proc()->pid, curr_proc()->u_start_time, curr_proc()->u_end_time);
++
++	/*kernel space start*/
++	curr_proc()->k_start_time = get_cycle();
++
+ 	if ((r_sstatus() & SSTATUS_SPP) != 0)
+ 		panic("usertrap: not from user mode");
+ 
+@@ -114,6 +123,13 @@ void usertrapret()
+ 	x |= SSTATUS_SPIE; // enable interrupts in user mode
+ 	w_sstatus(x);
+ 
++	/*calc time*/
++	/*kernel space end*/
++	curr_proc()->k_end_time = get_cycle();
++	curr_proc()->k_total_time += curr_proc()->k_end_time - curr_proc()->k_start_time;
++	/*user space start*/
++	curr_proc()->u_start_time = get_cycle();
++
+ 	// tell trampoline.S the user page table to switch to.
+ 	// uint64 satp = MAKE_SATP(p->pagetable);
+ 	userret((uint64)trapframe);
