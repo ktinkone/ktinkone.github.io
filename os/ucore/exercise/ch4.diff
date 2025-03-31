@@ -1,0 +1,315 @@
+diff --git a/os/kalloc.c b/os/kalloc.c
+index 6f7012d..c59d777 100644
+--- a/os/kalloc.c
++++ b/os/kalloc.c
+@@ -53,5 +53,6 @@ void *kalloc(void)
+ 		kmem.freelist = l->next;
+ 		memset((char *)l, 5, PGSIZE); // fill with junk
+ 	}
++	debugf("kalloc %x", (uint64)l);
+ 	return (void *)l;
+ }
+\ No newline at end of file
+diff --git a/os/proc.c b/os/proc.c
+index ab840d8..dff2ee7 100644
+--- a/os/proc.c
++++ b/os/proc.c
+@@ -3,6 +3,7 @@
+ #include "loader.h"
+ #include "trap.h"
+ #include "vm.h"
++#include "timer.h"
+ 
+ struct proc pool[NPROC];
+ __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
+@@ -33,6 +34,7 @@ void proc_init(void)
+ 		/*
+ 		* LAB1: you may need to initialize your new fields of proc here
+ 		*/
++		p->is_running = 0;
+ 	}
+ 	idle.kstack = (uint64)boot_stack_top;
+ 	idle.pid = 0;
+@@ -88,6 +90,10 @@ void scheduler(void)
+ 				/*
+ 				* LAB1: you may need to init proc start time here
+ 				*/
++				if (p->is_running == 0) {
++					p->first_run_time = get_cycle();
++					p->is_running = 1;
++				}
+ 				p->state = RUNNING;
+ 				current_proc = p;
+ 				swtch(&idle.context, &p->context);
+diff --git a/os/proc.h b/os/proc.h
+index be836bc..644bdac 100644
+--- a/os/proc.h
++++ b/os/proc.h
+@@ -3,6 +3,7 @@
+ 
+ #include "riscv.h"
+ #include "types.h"
++#include "syscall_ids.h"
+ 
+ #define NPROC (16)
+ 
+@@ -43,11 +44,19 @@ struct proc {
+ 	/*
+ 	* LAB1: you may need to add some new fields here
+ 	*/
++	unsigned int syscall_times[MAX_SYSCALL_NUM];
++	int is_running;
++	uint64 first_run_time;
+ };
+ 
+ /*
+ * LAB1: you may need to define struct for TaskInfo here
+ */
++struct proc_task_info{
++	enum procstate state;
++	unsigned int syscall_times[500];
++	int total_time; /*ms*/
++};
+ 
+ struct proc *curr_proc();
+ void exit(int);
+diff --git a/os/syscall.c b/os/syscall.c
+index 3224ef0..05ccfb9 100644
+--- a/os/syscall.c
++++ b/os/syscall.c
+@@ -36,14 +36,13 @@ uint64 sys_sched_yield()
+ uint64 sys_gettimeofday(TimeVal *val, int _tz) // TODO: implement sys_gettimeofday in pagetable. (VA to PA)
+ {
+ 	// YOUR CODE
+-	val->sec = 0;
+-	val->usec = 0;
++	TimeVal k_val;
++	uint64 cycle = get_cycle();
+ 
+-	/* The code in `ch3` will leads to memory bugs*/
++	k_val.sec = cycle / CPU_FREQ;
++	k_val.usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
+ 
+-	// uint64 cycle = get_cycle();
+-	// val->sec = cycle / CPU_FREQ;
+-	// val->usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
++	copyout(curr_proc()->pagetable, (uint64)val, (char *)&k_val, sizeof(k_val));
+ 	return 0;
+ }
+ 
+@@ -58,13 +57,168 @@ uint64 sys_sbrk(int n)
+ }
+ 
+ 
+-
+ // TODO: add support for mmap and munmap syscall.
+ // hint: read through docstrings in vm.c. Watching CH4 video may also help.
+ // Note the return value and PTE flags (especially U,X,W,R)
++int mmap(void* start, unsigned long long len, int port, int flag, int fd)
++{
++	void *pa;
++	void *va;
++	int ret = 0;
++	unsigned long long _len = len;
++	int perm = 0;
++
++	debugf("mmap start:: start %x", start);
++
++	if (port & (~0x7) || 0 == (port & (0x7)) || flag != 0 || fd != -1) {
++		debugf("mmap error: invalid argv %d %d %d", port, flag, fd);
++		return -1;
++	}
++
++	if ((uint64)(start) % PAGE_SIZE) {
++		debugf("mmap error: invalid va start");
++		return -1;
++	}
++
++	if (0 == len) {
++		return 0;
++	}
++
++	/*check if vm is mapped*/
++	va = start;
++	_len = len;
++	while (_len) {
++		//maybe we should check all va address from va to va + len
++		if (0 != walkaddr(curr_proc()->pagetable, (uint64)va)) {
++			debugf("mmap error: va has been mapped");
++			return -1;
++		}
++		if (_len >= PAGE_SIZE) {
++			_len -= PAGE_SIZE;
++			va += PAGE_SIZE;
++		} else {
++			_len = 0;
++		}
++	}
++
++	if (port & 0x1) {
++		perm |= PTE_R;
++	}
++
++	if (port & 0x2) {
++		perm |= PTE_W;
++	}
++
++	if (port & 0x4) {
++		perm |= PTE_X;
++	}
++
++	perm |= PTE_U;
++
++	va = start;
++	_len = len;
++	while (_len) {
++		pa = kalloc();
++		if ((void *)0 == pa) {
++			debugf("mmap error: kalloc error");
++			ret = -1;
++			break;
++		}
++		debugf("va %x pa %x", (uint64)va, (uint64)pa);
++		if (mappages(curr_proc()->pagetable, (uint64)va, (uint64)PAGE_SIZE, (uint64)pa, perm) != 0) {
++			debugf("mmap error: , mappages error");
++			ret = -1;
++			break;
++		}
++
++		if (_len >= PAGE_SIZE) {
++			_len -= PAGE_SIZE;
++			va += PAGE_SIZE;
++		} else {
++			_len = 0;
++		}
++	}
++
++	return ret;
++}
++
++int munmap(void* start, unsigned long long len)
++{
++	void *pa;
++	void *va;
++	unsigned long long _len;
++
++	debugf("unmmap start");
++
++	if ((uint64)(start) % PAGE_SIZE) {
++		debugf("munmap error: invalid va start");
++		return -1;
++	}
++
++	/*check if vm is mapped*/
++	va = start;
++	_len = len;
++	while (_len) {
++		if (0 == walkaddr(curr_proc()->pagetable, (uint64)va)) {
++			debugf("mmap error: va has not been mapped");
++			return -1;
++		}
++		if (_len >= PAGE_SIZE) {
++			_len -= PAGE_SIZE;
++			va += PAGE_SIZE;
++		} else {
++			_len = 0;
++		}
++	}
++
++	va = start;
++	_len = len;
++	while (_len) {
++		pa = (void *)walkaddr(curr_proc()->pagetable, (uint64)va);
++		if ((void *)0 == pa) {
++			debugf("munmap error: walkaddr error");
++			break;
++		}
++
++		uvmunmap(curr_proc()->pagetable, (uint64)va, 1, 1);
++
++		if (_len >= PAGE_SIZE) {
++			_len -= PAGE_SIZE;
++			va += PAGE_SIZE;
++		} else {
++			_len = 0;
++		}
++	}
++
++	return 0;
++}
++
+ /*
+ * LAB1: you may need to define sys_task_info here
+ */
++uint64 sys_task_info(struct proc_task_info *task_info)
++{
++	struct proc_task_info k_task_info;
++	int syscall_id;
++
++	/*fill task_info*/
++	switch (curr_proc()->state) {
++		case RUNNING:
++			k_task_info.state = 2;
++			break;
++	default:
++			break;
++	}
++
++	for (syscall_id = 0; syscall_id < MAX_SYSCALL_NUM; syscall_id++) {
++		k_task_info.syscall_times[syscall_id] = curr_proc()->syscall_times[syscall_id];
++	}
++
++	k_task_info.total_time = (get_cycle() - curr_proc()->first_run_time) / (12500);
++
++	copyout(curr_proc()->pagetable, (uint64)task_info, (char *)&k_task_info, sizeof(k_task_info));
++	return 0;
++}
+ 
+ extern char trap_page[];
+ 
+@@ -79,6 +233,10 @@ void syscall()
+ 	/*
+ 	* LAB1: you may need to update syscall counter for task info here
+ 	*/
++	if (id < MAX_SYSCALL_NUM) {
++		curr_proc()->syscall_times[id]++;
++	}
++
+ 	switch (id) {
+ 	case SYS_write:
+ 		ret = sys_write(args[0], args[1], args[2]);
+@@ -98,6 +256,15 @@ void syscall()
+ 	/*
+ 	* LAB1: you may need to add SYS_taskinfo case here
+ 	*/
++	case SYS_task_info:
++		ret = sys_task_info((struct proc_task_info *)args[0]);
++		break;
++	case SYS_mmap:
++		ret = mmap((void *)args[0], args[1], args[2], args[3], args[4]);
++		break;
++	case SYS_munmap:
++		ret = munmap((void *)args[0], args[1]);
++		break;
+ 	default:
+ 		ret = -1;
+ 		errorf("unknown syscall %d", id);
+diff --git a/os/syscall_ids.h b/os/syscall_ids.h
+index f979cdf..f71e8d1 100644
+--- a/os/syscall_ids.h
++++ b/os/syscall_ids.h
+@@ -280,6 +280,7 @@
+ /*
+ * LAB1: you may need to define SYS_task_info here
+ */
++#define SYS_task_info 410
+ 
+ 
+ #define SYS_pidfd_send_signal 424
+@@ -298,3 +299,5 @@
+ #define SYS_pidfd_getfd 438
+ #define SYS_faccessat2 439
+ #define SYS_riscv_flush_icache 244 + 15
++
++#define MAX_SYSCALL_NUM 500
+\ No newline at end of file
