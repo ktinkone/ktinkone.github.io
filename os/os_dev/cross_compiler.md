@@ -41,7 +41,11 @@ A: binutils and gcc is two indival project, binutils contain ar, ld , objdump an
 每次到这一步的时候，就会很迷茫，不知道该咋办了，看源码？还是继续搜？
 最后还是AI帮忙解决了。
 
-```
-1. libc和libstdc++: 这两个lib都是用户态进程需要去链接的，理论上os是不需要链接的。lib里面实现的都是一些系统调用的封装。这些正是os要求实现的
-2. 为什么gcc里面包含libstdc++,但是不包含libc? c++标注库需要编译器深度配合，基本每个gcc版本都有对应的libstdc++。 libc比较稳定，且独自维护
-```
+---
+
+Q1: libc和libstdc++的区别  
+A1: 这两个lib都是用户态进程需要去链接的，理论上os是不需要链接的。lib里面实现的都是一些系统调用的封装。这些正是os要求实现的  
+Q2: 为什么gcc里面包含libstdc++,但是不包含libc?  
+A2: c++标注库需要编译器深度配合，基本每个gcc版本都有对应的libstdc++。 libc比较稳定，且独自维护  
+
+---
